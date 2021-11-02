@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/hashicorp/hcl2/hclwrite"
 	"golang.org/x/tools/imports"
 
 	"golang.org/x/tools/go/packages"
@@ -228,5 +229,5 @@ func (src ExampleSource) GenExample() (string, error) {
 		results = append(results, line)
 	}
 
-	return strings.Join(results, "\n"), nil
+	return string(hclwrite.Format([]byte(strings.Join(results, "\n")))), nil
 }
