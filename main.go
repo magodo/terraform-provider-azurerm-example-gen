@@ -4,6 +4,8 @@ import (
 	"flag"
 	"fmt"
 	"os"
+
+	"github.com/magodo/terraform-provider-azurerm-example-gen/examplegen"
 )
 
 const usage = `Generate example configuration for Terraform AzureRM provider from its AccTest.
@@ -21,7 +23,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	src := ExampleSource{
+	src := examplegen.ExampleSource{
 		RootDir:    args[0],
 		ServiceDir: args[1],
 		TestCase:   args[2],
