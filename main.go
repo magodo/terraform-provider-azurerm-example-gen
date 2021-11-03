@@ -10,7 +10,7 @@ import (
 
 const usage = `Generate example configuration for Terraform AzureRM provider from its AccTest.
 
-Usage: terraform-provider-azurerm-example-gen rootdir servicedir testname
+Usage: terraform-provider-azurerm-example-gen rootdir servicepkg testname
 
 Example: terraform-provider-azurerm-example-gen $HOME/github/terraform-provider-azurerm ./internal/services/network TestAccSubnet_basic
 `
@@ -25,7 +25,7 @@ func main() {
 
 	src := examplegen.ExampleSource{
 		RootDir:    args[0],
-		ServiceDir: args[1],
+		ServicePkg: args[1],
 		TestCase:   args[2],
 	}
 	example, err := src.GenExample()

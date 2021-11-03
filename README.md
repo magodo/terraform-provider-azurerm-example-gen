@@ -14,6 +14,8 @@ Note that this tool depends on `go` command. So make sure you have `go` installe
 
 ```bash
 $ terraform-provider-azurerm-example-gen ~/github/terraform-provider-azurerm ./internal/services/network TestAccSubnet_basic
+# or
+$ terraform-provider-azurerm-example-gen ~/github/terraform-provider-azurerm github.com/hashicorp/terraform-provider-azurerm/internal/services/network TestAccSubnet_basic
 ```
 
 Output:

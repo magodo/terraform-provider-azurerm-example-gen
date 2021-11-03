@@ -26,13 +26,13 @@ const (
 
 type ExampleSource struct {
 	RootDir    string
-	ServiceDir string
+	ServicePkg string
 	TestCase   string
 }
 
 func (src ExampleSource) GenExample() (string, error) {
 	cfg := &packages.Config{Mode: packages.LoadAllSyntax, Tests: true, Dir: src.RootDir}
-	pkgs, err := packages.Load(cfg, src.ServiceDir)
+	pkgs, err := packages.Load(cfg, src.ServicePkg)
 	if err != nil {
 		return "", fmt.Errorf("loading package: %v", err)
 	}
@@ -41,10 +41,14 @@ func (src ExampleSource) GenExample() (string, error) {
 	}
 
 	var (
-		targetFdecl *ast.FuncDecl
-		targetFile  *ast.File
+		targetFdecl    *ast.FuncDecl
+		targetAst      *ast.File
+		targetFilePath string
 	)
 	for _, pkg := range pkgs {
+		if !strings.HasSuffix(pkg.PkgPath, "_test") {
+			continue
+		}
 		for _, f := range pkg.Syntax {
 			for _, decl := range f.Decls {
 				fdecl, ok := decl.(*ast.FuncDecl)
@@ -55,7 +59,8 @@ func (src ExampleSource) GenExample() (string, error) {
 					continue
 				}
 				targetFdecl = fdecl
-				targetFile = f
+				targetAst = f
+				targetFilePath = pkg.Fset.File(fdecl.Pos()).Name()
 				break
 			}
 		}
@@ -158,14 +163,14 @@ func (src ExampleSource) GenExample() (string, error) {
 	fset := token.NewFileSet()
 	targetFdecl.Body.List = stmts
 	targetFdecl.Name.Name = testCaseGen
-	targetFile.Decls = []ast.Decl{targetFdecl}
+	targetAst.Decls = []ast.Decl{targetFdecl}
 
 	buf := bytes.NewBuffer([]byte{})
-	if err := printer.Fprint(buf, fset, targetFile); err != nil {
+	if err := printer.Fprint(buf, fset, targetAst); err != nil {
 		return "", fmt.Errorf("printing the source code: %v", err)
 	}
 
-	testFilePath := filepath.Join(src.RootDir, src.ServiceDir, testFileGen)
+	testFilePath := filepath.Join(filepath.Dir(targetFilePath), testFileGen)
 	content, err := imports.Process(testFilePath, buf.Bytes(), &imports.Options{Comments: false})
 	if err != nil {
 		return "", fmt.Errorf("imports processing the source code: %v", err)
@@ -182,7 +187,7 @@ func (src ExampleSource) GenExample() (string, error) {
 
 	// Run the test and fetch the printed Terraform configuration.
 	cmd := exec.Command("go", "test", "-v", "-run="+testCaseGen)
-	cmd.Dir = filepath.Join(src.RootDir, src.ServiceDir)
+	cmd.Dir = filepath.Dir(testFilePath)
 
 	// The acceptance.BuildTestData depends on the following environment variables:
 	// - ARM_TEST_LOCATION
