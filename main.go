@@ -33,5 +33,5 @@ func main() {
 		fmt.Fprintf(os.Stderr, err.Error())
 		os.Exit(1)
 	}
-	fmt.Println(example)
+	fmt.Printf(example)
 }

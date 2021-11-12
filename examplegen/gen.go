@@ -6,22 +6,24 @@ import (
 	"errors"
 	"fmt"
 	"go/ast"
+	"go/parser"
 	"go/printer"
 	"go/token"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/hashicorp/hcl2/hclwrite"
-	"golang.org/x/tools/imports"
-
 	"golang.org/x/tools/go/packages"
+	"golang.org/x/tools/imports"
 )
 
 const (
-	testFileGen = "example_gen_test.go"
-	testCaseGen = "TestExampleGen"
+	testFileGen       = "example_gen_test.go"
+	testCaseGenPrefix = "TestExampleGen_"
 )
 
 type ExampleSource struct {
@@ -29,6 +31,14 @@ type ExampleSource struct {
 	ServicePkg string
 	TestCase   string
 }
+
+type TestFuncInfo struct {
+	file     *ast.File
+	filePath string
+	fdecl    *ast.FuncDecl
+}
+
+type TestFuncInfos []TestFuncInfo
 
 func (src ExampleSource) GenExample() (string, error) {
 	cfg := &packages.Config{Mode: packages.LoadAllSyntax, Tests: true, Dir: src.RootDir}
@@ -40,12 +50,11 @@ func (src ExampleSource) GenExample() (string, error) {
 		return "", fmt.Errorf("loading package contains error")
 	}
 
-	var (
-		targetFdecl    *ast.FuncDecl
-		targetAst      *ast.File
-		targetFilePath string
-	)
+	p := regexp.MustCompile(src.TestCase)
+
+	var testFuncInfos TestFuncInfos
 	for _, pkg := range pkgs {
+		// Guaranteed to have at most one _test package since we are loading only one package.
 		if !strings.HasSuffix(pkg.PkgPath, "_test") {
 			continue
 		}
@@ -55,123 +64,29 @@ func (src ExampleSource) GenExample() (string, error) {
 				if !ok {
 					continue
 				}
-				if fdecl.Name.Name != src.TestCase {
+				if !p.MatchString(fdecl.Name.Name) {
 					continue
 				}
-				targetFdecl = fdecl
-				targetAst = f
-				targetFilePath = pkg.Fset.File(fdecl.Pos()).Name()
-				break
+				testFuncInfos = append(testFuncInfos, TestFuncInfo{
+					file:     f,
+					filePath: pkg.Fset.File(fdecl.Pos()).Name(),
+					fdecl:    fdecl,
+				})
 			}
 		}
 	}
 
-	if targetFdecl == nil {
-		return "", fmt.Errorf("no test case named %q", src.TestCase)
+	if len(testFuncInfos) == 0 {
+		return "", fmt.Errorf("no test case found that matches %q", src.TestCase)
 	}
 
-	// We keep the content of the target function body until the invocation of the "ResourceTest", which is typically doing the setup.
-	var resourceTestCall *ast.CallExpr
-	var stmts []ast.Stmt
-	for _, stmt := range targetFdecl.Body.List {
-		exprstmt, ok := stmt.(*ast.ExprStmt)
-		if !ok {
-			stmts = append(stmts, stmt)
-			continue
-		}
-		callexpr, ok := exprstmt.X.(*ast.CallExpr)
-		if !ok {
-			stmts = append(stmts, stmt)
-			continue
-		}
-		selexpr, ok := callexpr.Fun.(*ast.SelectorExpr)
-		if !ok {
-			stmts = append(stmts, stmt)
-			continue
-		}
-		if selexpr.Sel.Name != "ResourceTest" {
-			stmts = append(stmts, stmt)
-			continue
-		}
-		resourceTestCall = callexpr
-		break
+	tc, err := testFuncInfos.GenPrintTestCase()
+	if err != nil {
+		return "", fmt.Errorf("generating the dummy test cases: %w", err)
 	}
 
-	if resourceTestCall == nil {
-		return "", fmt.Errorf("no ResourceTest call found")
-	}
-
-	// Look for the first test step and record the assignment to the "Config", which is then used as the config generation invocation.
-	if len(resourceTestCall.Args) != 3 {
-		return "", fmt.Errorf("ResourceTest doesn't have 3 arguments")
-	}
-	teststeps, ok := resourceTestCall.Args[2].(*ast.CompositeLit)
-	if !ok {
-		return "", fmt.Errorf("test steps are not defined as a composite literal")
-	}
-	if len(teststeps.Elts) == 0 {
-		return "", fmt.Errorf("there is no test step defined")
-	}
-	firstteststep, ok := teststeps.Elts[0].(*ast.CompositeLit)
-	if !ok {
-		return "", fmt.Errorf("the first test step is not defined as a composite literal")
-	}
-
-	var configcallexpr *ast.CallExpr
-	for _, elt := range firstteststep.Elts {
-		elt, ok := elt.(*ast.KeyValueExpr)
-		if !ok {
-			continue
-		}
-		key, ok := elt.Key.(*ast.Ident)
-		if !ok {
-			continue
-		}
-		if key.Name != "Config" {
-			continue
-		}
-		callexpr, ok := elt.Value.(*ast.CallExpr)
-		if !ok {
-			continue
-		}
-		configcallexpr = callexpr
-		break
-	}
-
-	if configcallexpr == nil {
-		return "", fmt.Errorf(`no "Config" field found for the first test step`)
-	}
-
-	stmts = append(stmts,
-		&ast.ExprStmt{
-			X: &ast.CallExpr{
-				Fun: &ast.SelectorExpr{
-					X: &ast.Ident{
-						Name: "fmt",
-					},
-					Sel: &ast.Ident{
-						Name: "Println",
-					},
-				},
-				Args: []ast.Expr{
-					configcallexpr,
-				},
-			},
-		},
-	)
-
-	fset := token.NewFileSet()
-	targetFdecl.Body.List = stmts
-	targetFdecl.Name.Name = testCaseGen
-	targetAst.Decls = []ast.Decl{targetFdecl}
-
-	buf := bytes.NewBuffer([]byte{})
-	if err := printer.Fprint(buf, fset, targetAst); err != nil {
-		return "", fmt.Errorf("printing the source code: %v", err)
-	}
-
-	testFilePath := filepath.Join(filepath.Dir(targetFilePath), testFileGen)
-	content, err := imports.Process(testFilePath, buf.Bytes(), &imports.Options{Comments: false})
+	testFilePath := filepath.Join(filepath.Dir(testFuncInfos[0].filePath), testFileGen)
+	content, err := imports.Process(testFilePath, []byte(tc), &imports.Options{Comments: false})
 	if err != nil {
 		return "", fmt.Errorf("imports processing the source code: %v", err)
 	}
@@ -186,7 +101,7 @@ func (src ExampleSource) GenExample() (string, error) {
 	}
 
 	// Run the test and fetch the printed Terraform configuration.
-	cmd := exec.Command("go", "test", "-v", "-run="+testCaseGen)
+	cmd := exec.Command("go", "test", "-v", "-run="+testCaseGenPrefix+src.TestCase)
 	cmd.Dir = filepath.Dir(testFilePath)
 
 	// The acceptance.BuildTestData depends on the following environment variables:
@@ -216,23 +131,185 @@ func (src ExampleSource) GenExample() (string, error) {
 
 	scanner := bufio.NewScanner(stdout)
 	scanner.Split(bufio.ScanLines)
-	var active bool
-	var results []string
+	configSet := map[string]string{}
+	var lines []string
+	var name string
 	for scanner.Scan() {
 		line := scanner.Text()
 		switch {
 		case strings.HasPrefix(line, "=== RUN"):
-			active = true
+			name = strings.TrimSpace(strings.TrimPrefix(line, "=== RUN"))
 			continue
 		case strings.HasPrefix(line, "--- PASS"):
-			active = false
+			configSet[name] = string(hclwrite.Format([]byte(strings.Join(lines, "\n"))))
+			lines = []string{}
+			name = ""
+			continue
+		case strings.HasPrefix(line, "--- FAIL"):
+			configSet[name] = fmt.Sprintf("Runtime Error:\n%s", strings.Join(lines, "\n"))
+			lines = []string{}
+			name = ""
 			continue
 		}
-		if !active || line == "" {
+		if name == "" || line == "" {
 			continue
 		}
-		results = append(results, line)
+		lines = append(lines, line)
 	}
 
-	return string(hclwrite.Format([]byte(strings.Join(results, "\n")))), nil
+	names := []string{}
+	for k := range configSet {
+		names = append(names, k)
+	}
+	names = sort.StringSlice(names)
+	var out string
+	for _, name := range names {
+		out += fmt.Sprintf("# Generated from AccTest %s\n\n%s\n\n", strings.TrimPrefix(name, testCaseGenPrefix), configSet[name])
+	}
+	return out, nil
+}
+
+func (infos TestFuncInfos) GenPrintTestCase() (string, error) {
+	if len(infos) == 0 {
+		return "", nil
+	}
+
+	decls := []ast.Decl{}
+	for _, info := range infos {
+		fdecl, err := info.GenPrintTestCaseFdecl()
+		if err == nil {
+			decls = append(decls, fdecl)
+		} else {
+			decls = append(decls, info.GenParseErrorTestCase(info.fdecl.Name.Name, err))
+		}
+	}
+
+	fset := token.NewFileSet()
+	file := *infos[0].file
+	file.Decls = decls
+
+	buf := bytes.NewBuffer([]byte{})
+	if err := printer.Fprint(buf, fset, &file); err != nil {
+		return "", fmt.Errorf("printing the source code: %v", err)
+	}
+	return buf.String(), nil
+}
+
+func (info TestFuncInfo) GenPrintTestCaseFdecl() (*ast.FuncDecl, error) {
+	// We keep the content of the target function body until the invocation of the "ResourceTest", which is typically doing the setup.
+	var resourceTestCall *ast.CallExpr
+	var stmts []ast.Stmt
+	for _, stmt := range info.fdecl.Body.List {
+		exprstmt, ok := stmt.(*ast.ExprStmt)
+		if !ok {
+			stmts = append(stmts, stmt)
+			continue
+		}
+		callexpr, ok := exprstmt.X.(*ast.CallExpr)
+		if !ok {
+			stmts = append(stmts, stmt)
+			continue
+		}
+		selexpr, ok := callexpr.Fun.(*ast.SelectorExpr)
+		if !ok {
+			stmts = append(stmts, stmt)
+			continue
+		}
+		if selexpr.Sel.Name != "ResourceTest" {
+			stmts = append(stmts, stmt)
+			continue
+		}
+		resourceTestCall = callexpr
+		break
+	}
+
+	if resourceTestCall == nil {
+		return nil, fmt.Errorf("no ResourceTest call found")
+	}
+
+	// Look for the first test step and record the assignment to the "Config", which is then used as the config generation invocation.
+	if len(resourceTestCall.Args) != 3 {
+		return nil, fmt.Errorf("ResourceTest doesn't have 3 arguments")
+	}
+	teststeps, ok := resourceTestCall.Args[2].(*ast.CompositeLit)
+	if !ok {
+		return nil, fmt.Errorf("test steps are not defined as a composite literal")
+	}
+	if len(teststeps.Elts) == 0 {
+		return nil, fmt.Errorf("there is no test step defined")
+	}
+	firstteststep, ok := teststeps.Elts[0].(*ast.CompositeLit)
+	if !ok {
+		return nil, fmt.Errorf("the first test step is not defined as a composite literal")
+	}
+
+	var configcallexpr *ast.CallExpr
+	for _, elt := range firstteststep.Elts {
+		elt, ok := elt.(*ast.KeyValueExpr)
+		if !ok {
+			continue
+		}
+		key, ok := elt.Key.(*ast.Ident)
+		if !ok {
+			continue
+		}
+		if key.Name != "Config" {
+			continue
+		}
+		callexpr, ok := elt.Value.(*ast.CallExpr)
+		if !ok {
+			continue
+		}
+		configcallexpr = callexpr
+		break
+	}
+
+	if configcallexpr == nil {
+		return nil, fmt.Errorf(`no "Config" field found for the first test step`)
+	}
+
+	stmts = append(stmts,
+		&ast.ExprStmt{
+			X: &ast.CallExpr{
+				Fun: &ast.SelectorExpr{
+					X: &ast.Ident{
+						Name: "fmt",
+					},
+					Sel: &ast.Ident{
+						Name: "Println",
+					},
+				},
+				Args: []ast.Expr{
+					configcallexpr,
+				},
+			},
+		},
+	)
+
+	fdecl := *info.fdecl
+	body := *fdecl.Body
+	body.List = stmts
+	fdecl.Body = &body
+	name := *fdecl.Name
+	name.Name = info.TestCaseName()
+	fdecl.Name = &name
+
+	return &fdecl, nil
+}
+
+func (info TestFuncInfo) TestCaseName() string {
+	return fmt.Sprintf("%s%s", testCaseGenPrefix, info.fdecl.Name.Name)
+}
+
+func (info TestFuncInfo) GenParseErrorTestCase(pkg string, err error) *ast.FuncDecl {
+	src := fmt.Sprintf(`
+package %s
+
+func %s(t *testing.T) {
+	fmt.Println(%q)
+}
+`, pkg, info.TestCaseName(), "Parsing Error: "+err.Error())
+	fset := token.NewFileSet()
+	f, _ := parser.ParseFile(fset, "src.go", src, 0)
+	return f.Decls[0].(*ast.FuncDecl)
 }
