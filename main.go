@@ -10,9 +10,9 @@ import (
 
 const usage = `Generate example configuration for Terraform AzureRM provider from its AccTest.
 
-Usage: terraform-provider-azurerm-example-gen -from=testname rootdir servicepkg...
+Usage: terraform-provider-azurerm-example-gen -from=testname_regexp rootdir servicepkg...
 
-Example: terraform-provider-azurerm-example-gen -dir=$HOME/github/terraform-provider-azurerm -from=TestAccSubnet_basic ./internal/services/network 
+Example: terraform-provider-azurerm-example-gen -dir=$HOME/github/terraform-provider-azurerm -from='TestAccSubnet_basic$' ./internal/services/network 
 `
 
 var (
@@ -23,7 +23,7 @@ var (
 func main() {
 	flag.Parse()
 	args := flag.Args()
-	if len(args) < 2 {
+	if len(args) == 0 {
 		fmt.Fprintf(os.Stderr, usage)
 		os.Exit(1)
 	}

@@ -110,13 +110,7 @@ func (src ExampleSource) GenExample() (string, error) {
 	}
 
 	// Run the test and fetch the printed Terraform configuration.
-	testcases := []string{}
-	for _, testFuncInfos := range testFuncInfosSet {
-		for _, testFuncInfo := range testFuncInfos {
-			testcases = append(testcases, "^"+testFuncInfo.TestCaseName()+"$")
-		}
-	}
-	args := []string{"test", "-v", "-run=" + strings.Join(testcases, "|")}
+	args := []string{"test", "-v", "-run=" + testCaseGenPrefix}
 	args = append(args, src.ServicePkgs...)
 	cmd := exec.Command("go", args...)
 	cmd.Dir = src.RootDir
