@@ -27,9 +27,9 @@ const (
 )
 
 type ExampleSource struct {
-	RootDir    string
-	ServicePkg string
-	TestCase   string
+	RootDir     string
+	ServicePkgs []string
+	TestCase    string
 }
 
 type TestFuncInfo struct {
@@ -40,9 +40,12 @@ type TestFuncInfo struct {
 
 type TestFuncInfos []TestFuncInfo
 
+// TstFuncInfosSet stores the TestFuncInfos for each matched packages.
+type TestFuncInfosSet map[*packages.Package]TestFuncInfos
+
 func (src ExampleSource) GenExample() (string, error) {
 	cfg := &packages.Config{Mode: packages.LoadAllSyntax, Tests: true, Dir: src.RootDir}
-	pkgs, err := packages.Load(cfg, src.ServicePkg)
+	pkgs, err := packages.Load(cfg, src.ServicePkgs...)
 	if err != nil {
 		return "", fmt.Errorf("loading package: %v", err)
 	}
@@ -52,12 +55,12 @@ func (src ExampleSource) GenExample() (string, error) {
 
 	p := regexp.MustCompile(src.TestCase)
 
-	var testFuncInfos TestFuncInfos
+	testFuncInfosSet := TestFuncInfosSet{}
 	for _, pkg := range pkgs {
-		// Guaranteed to have at most one _test package since we are loading only one package.
 		if !strings.HasSuffix(pkg.PkgPath, "_test") {
 			continue
 		}
+		var testFuncInfos TestFuncInfos
 		for _, f := range pkg.Syntax {
 			for _, decl := range f.Decls {
 				fdecl, ok := decl.(*ast.FuncDecl)
@@ -74,35 +77,49 @@ func (src ExampleSource) GenExample() (string, error) {
 				})
 			}
 		}
+		if len(testFuncInfos) == 0 {
+			continue
+		}
+		testFuncInfosSet[pkg] = testFuncInfos
 	}
 
-	if len(testFuncInfos) == 0 {
+	if len(testFuncInfosSet) == 0 {
 		return "", fmt.Errorf("no test case found that matches %q", src.TestCase)
 	}
 
-	tc, err := testFuncInfos.GenPrintTestCase()
-	if err != nil {
-		return "", fmt.Errorf("generating the dummy test cases: %w", err)
-	}
+	for pkg, testFuncInfos := range testFuncInfosSet {
+		tc, err := testFuncInfos.GenPrintTestCase()
+		if err != nil {
+			return "", fmt.Errorf("generating the dummy test cases for %s: %w", pkg.PkgPath, err)
+		}
 
-	testFilePath := filepath.Join(filepath.Dir(testFuncInfos[0].filePath), testFileGen)
-	content, err := imports.Process(testFilePath, []byte(tc), &imports.Options{Comments: false})
-	if err != nil {
-		return "", fmt.Errorf("imports processing the source code: %v", err)
-	}
+		testFilePath := filepath.Join(filepath.Dir(testFuncInfos[0].filePath), testFileGen)
+		content, err := imports.Process(testFilePath, []byte(tc), &imports.Options{Comments: false})
+		if err != nil {
+			return "", fmt.Errorf("imports processing the source code for %s: %v", testFilePath, err)
+		}
 
-	testFile, err := os.Create(testFilePath)
-	if err != nil {
-		return "", fmt.Errorf("creating test file: %w", err)
-	}
-	defer os.Remove(testFilePath)
-	if _, err := testFile.Write(content); err != nil {
-		return "", fmt.Errorf("writing to the test file %q: %v", testFilePath, err)
+		testFile, err := os.Create(testFilePath)
+		if err != nil {
+			return "", fmt.Errorf("creating test file %s: %w", testFilePath, err)
+		}
+		defer os.Remove(testFilePath)
+		if _, err := testFile.Write(content); err != nil {
+			return "", fmt.Errorf("writing to the test file %q: %v", testFilePath, err)
+		}
 	}
 
 	// Run the test and fetch the printed Terraform configuration.
-	cmd := exec.Command("go", "test", "-v", "-run="+testCaseGenPrefix+src.TestCase)
-	cmd.Dir = filepath.Dir(testFilePath)
+	testcases := []string{}
+	for _, testFuncInfos := range testFuncInfosSet {
+		for _, testFuncInfo := range testFuncInfos {
+			testcases = append(testcases, "^"+testFuncInfo.TestCaseName()+"$")
+		}
+	}
+	args := []string{"test", "-v", "-run=" + strings.Join(testcases, "|")}
+	args = append(args, src.ServicePkgs...)
+	cmd := exec.Command("go", args...)
+	cmd.Dir = src.RootDir
 
 	// The acceptance.BuildTestData depends on the following environment variables:
 	// - ARM_TEST_LOCATION
@@ -139,29 +156,26 @@ func (src ExampleSource) GenExample() (string, error) {
 		switch {
 		case strings.HasPrefix(line, "=== RUN"):
 			name = strings.TrimSpace(strings.TrimPrefix(line, "=== RUN"))
-			continue
 		case strings.HasPrefix(line, "--- PASS"):
 			configSet[name] = string(hclwrite.Format([]byte(strings.Join(lines, "\n"))))
 			lines = []string{}
 			name = ""
-			continue
 		case strings.HasPrefix(line, "--- FAIL"):
 			configSet[name] = fmt.Sprintf("Runtime Error:\n%s", strings.Join(lines, "\n"))
 			lines = []string{}
 			name = ""
-			continue
+		default:
+			if name != "" && line != "" {
+				lines = append(lines, line)
+			}
 		}
-		if name == "" || line == "" {
-			continue
-		}
-		lines = append(lines, line)
 	}
 
 	names := []string{}
 	for k := range configSet {
 		names = append(names, k)
 	}
-	names = sort.StringSlice(names)
+	sort.Strings(names)
 	var out string
 	for _, name := range names {
 		out += fmt.Sprintf("# Generated from AccTest %s\n\n%s\n\n", strings.TrimPrefix(name, testCaseGenPrefix), configSet[name])

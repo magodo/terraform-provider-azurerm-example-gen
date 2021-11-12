@@ -10,23 +10,32 @@ import (
 
 const usage = `Generate example configuration for Terraform AzureRM provider from its AccTest.
 
-Usage: terraform-provider-azurerm-example-gen rootdir servicepkg testname
+Usage: terraform-provider-azurerm-example-gen -from=testname rootdir servicepkg...
 
-Example: terraform-provider-azurerm-example-gen $HOME/github/terraform-provider-azurerm ./internal/services/network TestAccSubnet_basic
+Example: terraform-provider-azurerm-example-gen -dir=$HOME/github/terraform-provider-azurerm -from=TestAccSubnet_basic ./internal/services/network 
 `
+
+var (
+	fromFlag = flag.String("from", "", "From which Acceptance test case")
+	dirFlag  = flag.String("dir", ".", "The pat to the root directory of the provider code base")
+)
 
 func main() {
 	flag.Parse()
 	args := flag.Args()
-	if len(args) != 3 {
+	if len(args) < 2 {
+		fmt.Fprintf(os.Stderr, usage)
+		os.Exit(1)
+	}
+	if *fromFlag == "" {
 		fmt.Fprintf(os.Stderr, usage)
 		os.Exit(1)
 	}
 
 	src := examplegen.ExampleSource{
-		RootDir:    args[0],
-		ServicePkg: args[1],
-		TestCase:   args[2],
+		RootDir:     *dirFlag,
+		TestCase:    *fromFlag,
+		ServicePkgs: args,
 	}
 	example, err := src.GenExample()
 	if err != nil {
