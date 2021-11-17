@@ -13,7 +13,7 @@ Note that this tool depends on `go` command. So make sure you have `go` installe
 ## Usage
 
 ```bash
-$ terraform-provider-azurerm-example-gen -from=testname rootdir servicepkg...
+$ terraform-provider-azurerm-example-gen -dir=rootdir -from=testname servicepkg...
 ```
 
 Note that the invocation convention of this tool is similar to `go test`, where the `-from` supports suing regexp to specify the acctest names and the `servicepkg...` can be one or more packages (i.e. package-list mode), either in the directory form or import path form.

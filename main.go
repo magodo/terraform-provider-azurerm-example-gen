@@ -10,7 +10,7 @@ import (
 
 const usage = `Generate example configuration for Terraform AzureRM provider from its AccTest.
 
-Usage: terraform-provider-azurerm-example-gen -from=testname_regexp rootdir servicepkg...
+Usage: terraform-provider-azurerm-example-gen -dir=rootdir -from=testname_regexp servicepkg...
 
 Example: terraform-provider-azurerm-example-gen -dir=$HOME/github/terraform-provider-azurerm -from='TestAccSubnet_basic$' ./internal/services/network 
 `
