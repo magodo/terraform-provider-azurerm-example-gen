@@ -1,6 +1,6 @@
 module github.com/magodo/terraform-provider-azurerm-example-gen
 
-go 1.20
+go 1.21
 
 require (
 	github.com/hashicorp/hcl2 v0.0.0-20191002203319-fb75b3253c80
