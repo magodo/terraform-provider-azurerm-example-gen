@@ -16,7 +16,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/hashicorp/hcl2/hclwrite"
+	"github.com/hashicorp/hcl/v2/hclwrite"
 	"golang.org/x/tools/go/packages"
 	"golang.org/x/tools/imports"
 )
